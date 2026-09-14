@@ -1,24 +1,30 @@
 # Pescrow: A Pinocchio Escrow Challenge
 
-> **Solana Fall School** · Native Rust on Solana with [Pinocchio](https://github.com/anza-xyz/pinocchio)
+> **Solana Fall School · Assignment** · Native Rust on Solana with [Pinocchio](https://github.com/anza-xyz/pinocchio) 0.11.2 · Tests in Rust with LiteSVM · 3 challenges
 
-This repository is a *deliberately unfinished* escrow program. It ships with the **Make** instruction fully working and tested, and leaves **Take** and **Cancel** for you to build.
+**Finish the escrow, without a framework.**
 
-If you have only ever written Solana programs with Anchor, this is your chance to see what the framework was doing for you: manual account validation, manual PDA derivation, zero-copy state, and raw CPIs, all with a fraction of the compute cost.
+This repo is a native Rust escrow written with Pinocchio. `Make` works and is tested. `Take` and `Cancel` are missing. Your job is to build them, and prove they work, in three challenges.
 
-**Table of contents**
+| Checkpoint | Section                                                                   | When you finish this                                   |
+| ---------- | ------------------------------------------------------------------------- | ------------------------------------------------------ |
+| 00         | [Setup: Fork the repo](#00-setup-fork-the-repo)                           | Your own copy, with the build tools installed          |
+| 01         | [Starting point: Build and test](#01-starting-point-build-and-test)       | The shipped Make test passes on the untouched code     |
+| 02         | [Read before you write: How it works](#02-read-before-you-write-how-it-works) | You can explain dispatch and zero-copy state       |
+| 03         | [Read before you write: Make, line by line](#03-read-before-you-write-make-line-by-line) | You know the seven moves in `make.rs`   |
+| 04         | [Challenge 1 · hard: Implement Take](#04-challenge-1--hard-implement-take) | `take.rs` compiles and is wired in                    |
+| 05         | [Challenge 2 · shorter: Implement Cancel](#05-challenge-2--shorter-implement-cancel) | `cancel.rs` compiles, `MakeV2` explicitly rejected |
+| 06         | [Challenge 3 · the proof: Prove it with tests](#06-challenge-3--the-proof-prove-it-with-tests) | Five tests pass, the stranger's Cancel fails |
+| ?          | [When it breaks: Troubleshooting](#when-it-breaks-troubleshooting)        | Look up the error                                      |
+|            | [Pinocchio cheat sheet](#pinocchio-cheat-sheet)                           | API reference for the pinned versions                  |
 
-1. [What is an escrow?](#1-what-is-an-escrow)
-2. [Getting started](#2-getting-started)
-3. [Code walkthrough](#3-code-walkthrough)
-4. [The Challenge: implement Take and Cancel](#4-the-challenge-implement-take-and-cancel)
-5. [Pinocchio cheat sheet](#5-pinocchio-cheat-sheet)
+The same material is available as an interactive guide with progress tracking at [pinocchio-escrow-guide-3-day1.vercel.app](https://pinocchio-escrow-guide-3-day1.vercel.app).
 
 ---
 
-## 1. What is an escrow?
+## What an escrow is
 
-An escrow is the "hello world" of trustless exchange. Alice has token **A** and wants token **B**. Bob has token **B** and wants token **A**. Neither wants to send first.
+Alice has token **A** and wants token **B**. Bob has B and wants A. Neither wants to send first. The program is the neutral third party: it holds Alice's A in a **vault** only the program can move, remembers the terms in an **escrow account**, and releases the tokens when Bob pays, or hands them back if Alice changes her mind.
 
 ```
              MAKE                          TAKE
@@ -30,29 +36,91 @@ An escrow is the "hello world" of trustless exchange. Alice has token **A** and 
                                         (taker)
 
              CANCEL
-  Alice ◀──500 A── [ Vault ]   (only the maker, only before a Take)
+  Alice ◀──500 A── [ Vault ]   only the maker, only before a Take
 ```
 
-The program is the neutral third party. It holds Alice's tokens in a **vault** that only the program can move, remembers the terms of the deal in an **escrow account**, and releases the tokens atomically when Bob pays, or hands them back if Alice changes her mind.
+| Instruction | Who signs | What happens                                                                 | Status      |
+| ----------- | --------- | ---------------------------------------------------------------------------- | ----------- |
+| `Make`      | maker     | Create escrow PDA + vault, move `amount_to_give` of A into the vault         | Implemented |
+| `Take`      | taker     | Taker pays `amount_to_receive` of B to maker, receives all A, accounts close | **Your job** |
+| `Cancel`    | maker     | Maker gets A back, accounts close                                            | **Your job** |
 
-Three instructions, then:
+### Why Pinocchio, not Anchor
 
-| Instruction | Who signs | What happens                                                                 | Status in this repo |
-| ----------- | --------- | ---------------------------------------------------------------------------- | ------------------- |
-| `Make`      | maker     | Create escrow PDA + vault, move `amount_to_give` of A into the vault         | ✅ implemented      |
-| `Take`      | taker     | Taker pays `amount_to_receive` of B to maker, receives all A, accounts close | 🔨 **your job**     |
-| `Cancel`    | maker     | Maker gets A back, accounts close                                            | 🔨 **your job**     |
+If you have only written Anchor programs, this is where you see what the framework was doing for you: manual account validation, manual PDA derivation, zero-copy state, and raw CPIs. The payoff shows up in compute: the Make instruction here runs in about 30k CU.
+
+### The files you will touch
+
+| File                      | What it is                                                                 |
+| ------------------------- | -------------------------------------------------------------------------- |
+| `lib.rs`                  | Entrypoint and instruction dispatch. Add two match arms.                   |
+| `instructions/mod.rs`     | The instruction enum. Register your new modules.                           |
+| `instructions/make.rs`    | Finished. Read it first, copy its patterns. Checkpoint 03.                 |
+| `instructions/take.rs`    | Does not exist yet. Challenge 1.                                           |
+| `instructions/cancel.rs`  | Does not exist yet. Challenge 2.                                           |
+| `state/escrow.rs`         | The zero-copy account layout. Read only, you will call its getters.        |
+| `tests/mod.rs`            | LiteSVM tests. One exists; you add four. Challenge 3.                      |
+
+Search the code for `TODO (challenge)`. That comment in `lib.rs` marks where Take and Cancel plug in.
+
+> **This repo is on Pinocchio 0.11. Older tutorials will not compile.**
+>
+> The 0.11 line changed signatures that almost every escrow tutorial online still shows the old way. Three to know before you start:
+>
+> 1. Accounts arrive as `&mut [AccountView]`, not `&[AccountView]`.
+> 2. The token account state type is `pinocchio_token::state::Account`, not `TokenAccount`.
+> 3. Token CPI structs carry a `multisig_signers` field.
+>
+> If a snippet from elsewhere does not compile, check its version before you change your own code. The cheat sheet at the end of this page is written for the versions pinned in this repo.
 
 ---
 
-## 2. Getting started
+## 00 · Setup: Fork the repo
 
-### Prerequisites
+**When you finish this:** your own copy of the assignment on GitHub and on your machine, with the Solana build tools installed.
 
-* Rust (stable), `rustup` recommended
-* Solana platform tools: `cargo build-sbf` must be on your PATH. Install via the [Agave installer](https://docs.anza.xyz/cli/install), or `cargo install solana-cargo-build-sbf` and let it fetch platform-tools on first run.
+1. Open [github.com/decentra1ized/solana-fall-pescrow](https://github.com/decentra1ized/solana-fall-pescrow) and click **Fork**, top right.
+2. Clone *your fork*, not the original. Put your GitHub username in the link.
 
-### Build and test
+```bash
+git clone https://github.com/YOUR-USERNAME/solana-fall-pescrow.git
+cd solana-fall-pescrow
+```
+
+### Tools this repo expects
+
+| Tool              | Version   | How to get it                                                                                                              |
+| ----------------- | --------- | -------------------------------------------------------------------------------------------------------------------------- |
+| Rust              | stable    | `rustup update stable`                                                                                                     |
+| `cargo build-sbf` | Agave 3.x | Comes with the [Agave installer](https://docs.anza.xyz/cli/install). Or `cargo install solana-cargo-build-sbf` and let it fetch platform-tools on first run |
+| Anchor            |           | Not used. This is native Rust                                                                                              |
+| Node, Yarn        |           | Not used. Tests are in Rust                                                                                                |
+
+### Crates this repo pins
+
+| Crate                                | Version | What it gives you                                                        |
+| ------------------------------------ | ------- | ------------------------------------------------------------------------ |
+| `pinocchio`                          | 0.11.2  | `AccountView`, `entrypoint!`, CPI helpers, sysvars                       |
+| `pinocchio-system`                   | 0.6.1   | Typed CPI to the System Program: `CreateAccount`, …                      |
+| `pinocchio-token`                    | 0.6.0   | Typed CPI to SPL Token: `Transfer`, `CloseAccount`, …                    |
+| `pinocchio-associated-token-account` | 0.4.0   | Typed CPI to the ATA program                                             |
+| `pinocchio-pubkey`                   | 0.3.0   | `derive_address`, now a published crate rather than a git dependency     |
+| `litesvm`, `litesvm-token`           | 0.9.1   | The in-process SVM and its mint / ATA helpers                            |
+| `solana-rent`                        | 3.1.0   | Dev-only. The `Rent` type the tests use to override the sysvar           |
+
+> **No validator either.** The tests run in LiteSVM, an in-process Solana VM. There is no `solana-test-validator` to start, and nothing to deploy. Build the `.so`, run the tests, done.
+
+Push after each challenge, so your progress is saved:
+
+```bash
+git add -A && git commit -m "challenge 1: take" && git push
+```
+
+---
+
+## 01 · Starting point: Build and test
+
+**When you finish this:** the shipped Make test passes on the untouched code. Prove this before changing anything.
 
 ```bash
 # 1. Compile the on-chain program to target/deploy/escrow.so
@@ -62,7 +130,7 @@ cargo build-sbf
 cargo test -- --nocapture
 ```
 
-Expected output for the shipped `Make` test:
+You should see one passing test and its compute usage:
 
 ```
 Make transaction successful
@@ -70,48 +138,24 @@ CUs Consumed: ~30000
 test tests::tests::test_make_instruction ... ok
 ```
 
-> **Why do the SPL dev-dependencies have `features = ["no-entrypoint"]`?**
-> Without it the SPL crate's own program entrypoint gets linked into the test binary and collides with the one Pinocchio generates (`duplicate symbol: entrypoint`). Keep that feature on any SPL program crate you add later.
+> **Always build before you test.** The tests do not compile your program. They read the finished `target/deploy/escrow.so` into LiteSVM. Skip `cargo build-sbf` and the tests run your *old* program, not your latest change.
+>
+> `cargo test` alone compiles the crate for your laptop's CPU, which is what the test binary needs. It does not produce a `.so`.
 
-### Project layout
+<details>
+<summary><b>Why the SPL dev-dependencies have <code>no-entrypoint</code></b></summary>
 
-```
-src/
-├── lib.rs                  # entrypoint, program ID, instruction dispatch
-├── state/
-│   └── escrow.rs           # the Escrow account layout (zero-copy)
-├── instructions/
-│   ├── mod.rs              # instruction enum + discriminator parsing
-│   └── make.rs             # ✅ Make  (take.rs and cancel.rs go here)
-└── tests/
-    └── mod.rs              # LiteSVM integration tests
-```
+Without it the SPL crate's own program entrypoint gets linked into the test binary and collides with the one Pinocchio generates (`duplicate symbol: entrypoint`). Keep that feature on any SPL program crate you add later.
+
+</details>
 
 ---
 
-## 3. Code walkthrough
+## 02 · Read before you write: How it works
 
-### 3.1 `Cargo.toml`: what we depend on
+**When you finish this:** you can explain how an instruction reaches its handler, and how the escrow account stores its data without any serialization library.
 
-```toml
-[dependencies]
-pinocchio = "0.11.2"                          # core: AccountView, entrypoint, CPI helpers
-pinocchio-system = "0.6.1"                    # typed CPI to the System Program (CreateAccount, ...)
-pinocchio-token = "0.6.0"                     # typed CPI to SPL Token (Transfer, CloseAccount, ...)
-pinocchio-associated-token-account = "0.4.0"  # typed CPI to the ATA program
-pinocchio-pubkey = "0.3.0"                    # derive_address without syscall overhead
-pinocchio-log = "0.5.1"                       # cheap logging
-
-[dev-dependencies]
-litesvm = "0.9.1"                             # in-process SVM, no validator needed
-litesvm-token = "0.9.1"                       # helpers: CreateMint, CreateAssociatedTokenAccount, MintTo
-```
-
-These are the current crate versions as of Pinocchio 0.11. The 0.11 line changed a few signatures compared to older tutorials you may find online (accounts arrive as `&mut [AccountView]`, the token account state type is `Account`, token CPIs carry a `multisig_signers` field), so if a snippet elsewhere does not compile, check the version first.
-
-Note the `crate-type = ["cdylib", "lib"]`. `cdylib` is what `cargo build-sbf` turns into the `.so`; `lib` is what the test module links against so it can read `crate::ID`.
-
-### 3.2 `lib.rs`: the entrypoint
+### 1 · `lib.rs`, the entrypoint
 
 ```rust
 entrypoint!(process_instruction);
@@ -140,13 +184,12 @@ pub fn process_instruction(
 }
 ```
 
-Three things to notice:
+* `entrypoint!` is Pinocchio's macro. It parses the runtime input into `&mut [AccountView]` without the allocations and copies of the standard SDK path. Combined with explicit validation and compact instruction data, that can significantly reduce compute.
+* The slice is mutable because in 0.11 everything that changes an account in place (`set_lamports`, `close`, `try_borrow_mut`) takes `&mut self`. Your `take.rs` and `cancel.rs` handlers must take `&mut [AccountView]` too.
+* There is no Anchor-style 8-byte discriminator. We use one byte, so the instruction data stays smaller.
+* The `_ =>` arm is where your Take and Cancel calls will go.
 
-* `entrypoint!` is Pinocchio's macro. It deserializes the raw input buffer the runtime hands us into `&mut [AccountView]` **without copying**. That is where most of the CU savings over `solana-program` come from. The slice is mutable because operations that change an account in place (`set_lamports`, `close`, `try_borrow_mut`) take `&mut self` in 0.11.
-* There is no Anchor-style 8-byte discriminator. We use **one byte**. Fewer bytes, cheaper transactions.
-* The `_ =>` arm is where your `Take` and `Cancel` calls will go.
-
-### 3.3 `instructions/mod.rs`: the instruction enum
+### 2 · `instructions/mod.rs`, the enum
 
 ```rust
 pub enum EscrowInstructions {
@@ -159,11 +202,11 @@ pub enum EscrowInstructions {
 impl TryFrom<&u8> for EscrowInstructions { /* 0 → Make, 1 → Take, 2 → Cancel, 3 → MakeV2, _ → error */ }
 ```
 
-Take and Cancel already have their discriminators reserved (`1` and `2`). Your client code will put that byte first in `instruction_data`.
+Take and Cancel already have their discriminators reserved, `1` and `2`. Your test code will put that byte first in `instruction_data`.
 
-### 3.4 `state/escrow.rs`: zero-copy state
+### 3 · `state/escrow.rs`, zero-copy state
 
-This is the most "Pinocchio" part of the codebase. There is no Borsh, no `serialize()`/`deserialize()`. The struct **is** the bytes.
+This is the most "Pinocchio" part of the codebase. There is no Borsh, no `serialize()` or `deserialize()`. The struct **is** the bytes.
 
 ```rust
 #[repr(C)]
@@ -195,15 +238,21 @@ impl Escrow {
 }
 ```
 
-How to read this:
-
 * `#[repr(C)]` pins the field order and layout so we can reinterpret the account's byte buffer as `&mut Escrow` with a pointer cast. Writing to the struct writes straight into the account.
 * The `u64`s are stored as `[u8; 8]` on purpose. A real `u64` field would force 8-byte alignment, and account data buffers are not guaranteed to be aligned. Byte arrays have alignment 1, so the cast is always sound.
-* The getters/setters do the little-endian conversion on the way in and out. You will use `escrow.maker()`, `escrow.mint_b()`, `escrow.amount_to_receive()` and `escrow.bump` heavily in Take and Cancel.
+* The getters and setters do the little-endian conversion on the way in and out. You will use `escrow.maker()`, `escrow.mint_b()`, `escrow.amount_to_receive()` and `escrow.bump` heavily in Take and Cancel.
 
-### 3.5 `instructions/make.rs`: the Make instruction, line by line
+> **A borrow you must remember to drop.** `from_account_info` calls `try_borrow_mut()` on the account. While that `&mut Escrow` is alive, any CPI that touches the same account fails with `AccountBorrowFailed`. Read what you need into locals, then let the reference go out of scope before you invoke anything. This will bite you in Take.
 
-**Step 1: unpack accounts by position.** No names, no `#[account]` attributes. The client must pass them in exactly this order.
+---
+
+## 03 · Read before you write: Make, line by line
+
+**When you finish this:** you know the seven moves in `make.rs`. Take and Cancel reuse five of them.
+
+### 1 · Unpack accounts by position
+
+No names, no `#[account]` attributes. The client must pass them in exactly this order.
 
 ```rust
 let [
@@ -223,7 +272,9 @@ let [
 
 Because `accounts` is `&mut [AccountView]`, each binding here is a `&mut AccountView`. CPI structs want `&AccountView`, and Rust reborrows automatically, so you pass them as-is.
 
-**Step 2: validate the maker's token account.** Anchor's `token::authority = maker, token::mint = mint_a` constraints, done by hand:
+### 2 · Validate the maker's token account
+
+Anchor's `token::authority = maker, token::mint = mint_a` constraints, done by hand:
 
 ```rust
 {
@@ -233,9 +284,11 @@ Because `accounts` is `&mut [AccountView]`, each binding here is a `&mut Account
 }
 ```
 
-The block braces matter. `from_account_view` takes a borrow on the account's data; if that borrow is still alive when we later CPI with `maker_ata`, the runtime will refuse with a borrow error. Scoping it releases the borrow early. Remember this pattern; you will need it.
+> **The braces matter.** `from_account_view` borrows the account's data. If that borrow is still alive when we later CPI with `maker_ata`, the runtime refuses with a borrow error. Scoping it releases the borrow early. You will use this block pattern at least four times in Take.
 
-**Step 3: parse instruction data.** Layout after the discriminator byte: `[bump: u8][amount_to_receive: u64 LE][amount_to_give: u64 LE]`.
+### 3 · Parse instruction data
+
+Layout after the discriminator byte: `[bump: u8][amount_to_receive: u64 LE][amount_to_give: u64 LE]`.
 
 ```rust
 const MAKE_DATA_LEN: usize = 17;   // 1 + 8 + 8
@@ -254,7 +307,9 @@ if !maker.is_signer() {
 
 `from_le_bytes` on a slice is the idiomatic way to read an integer out of instruction data: no alignment concerns, no `unsafe`, and the length check up front means a short payload fails cleanly instead of reading out of bounds.
 
-**Step 4: verify the PDA.** Anchor's `seeds = [b"escrow", maker.key().as_ref()], bump` constraint. We take the bump from the client rather than calling `find_program_address` on-chain, because `find_program_address` loops over up to 255 candidates and is expensive; `derive_address` with a known bump is a single hash.
+### 4 · Verify the PDA
+
+Anchor's `seeds = [b"escrow", maker.key().as_ref()], bump` constraint. We take the bump from the client rather than calling `find_program_address` on-chain, because that loops over up to 255 candidates. `derive_address` with a known bump is a single hash.
 
 ```rust
 let seed = [b"escrow".as_ref(), maker.address().as_ref(), &[bump]];
@@ -264,9 +319,11 @@ if escrow_account_pda != *escrow_account.address().as_array() {
 }
 ```
 
-Return an error rather than `assert_eq!`: a panic surfaces to the client as a generic "program failed to complete", while `InvalidSeeds` tells them exactly what went wrong.
+Return an error rather than `assert_eq!`. A panic surfaces to the client as a generic "program failed to complete", while `InvalidSeeds` says exactly what went wrong.
 
-**Step 5: create the escrow account, signed by the PDA.** `init` in Anchor terms.
+### 5 · Create the escrow account, signed by the PDA
+
+`init` in Anchor terms.
 
 ```rust
 let bump_bytes = [bump];
@@ -298,11 +355,17 @@ CreateAccount {
 }
 ```
 
-`Rent::get()?.try_minimum_balance(len)` reads the Rent sysvar and returns `(128 + len) * lamports_per_byte`. Pinocchio 0.11 follows SIMD-0194, where the sysvar's rate already includes the exemption threshold (6960 lamports per byte on mainnet). Keep that in mind when you read §3.6.
+Note the shape: an early return on the "already exists" case, then the happy path straight down the function. Guard clauses read better than nesting the whole instruction inside an `if`, and `AccountAlreadyInitialized` tells the client more than `IllegalOwner` would.
 
-`invoke_signed` is how a program "signs" as a PDA: it proves to the runtime that it knows the seeds that produce that address. You will use exactly this `Signer` construction in Take and Cancel, except the bump will come from `escrow_state.bump` instead of instruction data.
+> **This `Signer` is the whole trick.** `invoke_signed` is how a program "signs" as a PDA: it proves to the runtime that it knows the seeds that produce that address. You will build exactly this `Signer` in Take and Cancel, except the bump comes from `escrow_state.bump` instead of instruction data.
 
-**Step 6: create the vault.** An ATA whose *wallet* is the escrow PDA. Because the PDA is the owner, only this program (via `invoke_signed`) can ever move tokens out of it.
+> **How much rent the account needs.** `Rent::get()?.try_minimum_balance(len)` returns `(128 + len) * lamports_per_byte`. Pinocchio 0.11 follows SIMD-0194, which folded the old 2.0-year exemption threshold into the rate: one integer multiply, no floating point, 8 CU instead of ~256.
+>
+> Its `Rent` struct is 8 bytes. It reads only the rate and ignores the sysvar's remaining fields. That detail is what makes the test setup below need one extra line.
+
+### 6 · Create the vault
+
+An ATA whose *wallet* is the escrow PDA. Because the PDA is the owner, only this program, via `invoke_signed`, can ever move tokens out of it.
 
 ```rust
 pinocchio_associated_token_account::instructions::Create {
@@ -315,7 +378,9 @@ pinocchio_associated_token_account::instructions::Create {
 }.invoke()?;
 ```
 
-**Step 7: deposit.** A plain SPL Token transfer, signed by the maker (who signed the transaction), so `invoke()` rather than `invoke_signed()`.
+### 7 · Deposit
+
+A plain SPL Token transfer, signed by the maker who signed the transaction. So `invoke()`, not `invoke_signed()`.
 
 ```rust
 pinocchio_token::instructions::Transfer {
@@ -327,53 +392,57 @@ pinocchio_token::instructions::Transfer {
 }.invoke()?;
 ```
 
-Done. Three CPIs, ~30k CU total.
+`multisig_signers` is new in `pinocchio-token` 0.6 and there is no `Default` to lean on, so every `Transfer` and `CloseAccount` you write needs it. The `as &[&AccountView]` cast is there so the generic parameter can be inferred from an empty slice.
 
-### 3.6 `tests/mod.rs`: how the test drives the program
+Done. Three CPIs, about 30k CU total.
 
-The test uses **LiteSVM**, an in-process Solana VM. It is orders of magnitude faster than `solana-test-validator` and needs no background process.
+### How the test drives it
 
-```rust
-fn setup() -> (LiteSVM, Keypair) {
-    let mut svm = LiteSVM::new();
-    let payer = Keypair::new();
-    // LiteSVM 0.9 ships the pre-SIMD-0194 Rent sysvar; align it with mainnet (see below).
-    svm.set_sysvar(&solana_rent::Rent { lamports_per_byte_year: 6960, exemption_threshold: 1.0, burn_percent: 50 });
-    svm.airdrop(&payer.pubkey(), 10 * LAMPORTS_PER_SOL).unwrap();
-    let program_data = std::fs::read("target/deploy/escrow.so").unwrap();   // ← from cargo build-sbf
-    svm.add_program(program_id(), &program_data).unwrap();
-    (svm, payer)
-}
-```
+`setup()` creates a LiteSVM, overrides the Rent sysvar, airdrops a payer, and loads `target/deploy/escrow.so`. Then `test_make_instruction`:
 
-**Why the `set_sysvar` line?** Pinocchio 0.11 computes rent exemption the SIMD-0194 way: `(128 + len) * lamports_per_byte`, reading a single rate from the sysvar. Mainnet, testnet and devnet have all activated that change, so the live sysvar carries 6960. LiteSVM 0.9.1, however, still initialises the sysvar with the legacy pair (3480 lamports per byte-year, 2.0-year threshold). Without the override the program asks the System Program for exactly half the lamports the runtime requires, and `Make` fails with `InsufficientFundsForRent`. Overriding the sysvar makes the test environment match the cluster your program will actually run on. Leave that line in place for your Take and Cancel tests.
-
-`test_make_instruction` then:
-
-1. Creates two mints (A and B) with 6 decimals.
+1. Creates two mints, A and B, with 6 decimals.
 2. Creates the maker's ATA for A and mints 1,000 A into it.
 3. Derives the escrow PDA with `Pubkey::find_program_address(&[b"escrow", maker], &PROGRAM_ID)` and the vault with `get_associated_token_address(&escrow, &mint_a)`.
-4. Builds the instruction data `[0u8, bump, amount_to_receive LE, amount_to_give LE]` and the 9 `AccountMeta`s in the order from §3.5 step 1.
+4. Builds the instruction data `[0u8, bump, amount_to_receive LE, amount_to_give LE]` and the 9 `AccountMeta`s in the order from step 1.
 5. Sends the transaction and prints CU usage.
-6. Reads the accounts back and asserts the vault holds 500 A, the maker's ATA dropped to 500 A, and the escrow account's 113 bytes contain the maker, both mints, both amounts and the bump.
+6. Reads the accounts back and asserts the vault holds 500 A, the maker's ATA dropped to 500 A, and the escrow's 113 bytes contain the maker, both mints, both amounts and the bump.
 
-Step 6 is the part people usually skip. A transaction that *succeeds* is not the same as a transaction that did the *right thing*. Your Take and Cancel tests should read state back the same way.
+> **Step 6 is the part people skip.** A transaction that *succeeds* is not the same as a transaction that did the *right thing*. Your Take and Cancel tests must read state back the same way.
+
+**The one line in `setup()` you must not delete:**
+
+```rust
+let mut svm = LiteSVM::new();
+
+// LiteSVM 0.9 still ships the pre-SIMD-0194 Rent sysvar. Match the live cluster.
+#[allow(deprecated)]
+svm.set_sysvar(&solana_rent::Rent {
+    lamports_per_byte_year: 6960,
+    exemption_threshold: 1.0,
+    burn_percent: 50,
+});
+```
+
+<details>
+<summary><b>Why, and what breaks without it</b></summary>
+
+Mainnet, testnet and devnet have activated SIMD-0194, so the live sysvar carries the folded rate: 6960 lamports per byte with a threshold of 1.0. LiteSVM 0.9.1 still initialises the sysvar with the legacy pair, 3480 per byte-year and a 2.0 threshold. The same product, split differently.
+
+Pinocchio 0.11 reads only the rate and multiplies once. Against the legacy sysvar it therefore asks the System Program for exactly half the lamports the runtime requires, and Make fails with `InsufficientFundsForRent`. Overriding the sysvar makes both sides agree on 6960. Carry that line into every helper you factor out for Take and Cancel.
+
+</details>
 
 ---
 
-## 4. The Challenge: implement Take and Cancel
+## 04 · Challenge 1 · hard: Implement Take
 
-Your goal: make the escrow *complete*. When you are done, tokens deposited with `Make` can be either claimed by a taker who pays the asking price, or reclaimed by the maker. All accounts must be closed and rent refunded.
+**Goal:** Bob sees Alice's escrow, 500 A for 100 B, and calls Take. In one atomic transaction, 100 B moves from Bob to Alice, 500 A moves from the vault to Bob, and the vault and escrow accounts are closed with their rent refunded to Alice.
 
-Work through the two instructions below. Each has the accounts, the checks, the CPIs, and the test you need to write. The code is yours to write.
+**Why it matters:** without Take, the escrow is a one-way deposit box. This is the instruction that makes it a trade.
 
-### 4.1 Take (`discriminator = 1`)
+**Instruction data:** just the discriminator, `1`. Everything else is already in the escrow account.
 
-**Story:** Bob sees Alice's escrow (500 A for 100 B). He calls Take. In one atomic transaction: 100 B moves from Bob to Alice, 500 A moves from the vault to Bob, the vault and escrow accounts are closed and their rent goes to Alice.
-
-**Instruction data:** just the discriminator. Everything else is already in the escrow account.
-
-**Accounts (suggested order):**
+**Accounts, suggested order:**
 
 | #   | Account          | Writable | Signer | Notes                                                                 |
 | --- | ---------------- | -------- | ------ | --------------------------------------------------------------------- |
@@ -390,62 +459,152 @@ Work through the two instructions below. Each has the accounts, the checks, the 
 | 10  | `token_program`  |          |        |                                                                       |
 | 11  | `associated_token_program` |  |      |                                                                       |
 
-**Step-by-step:**
+> **Account order is the API.** There is no IDL. Write the account order in a comment at the top of `take.rs`, and keep the test in sync with it.
 
-1. **Destructure** the accounts with the same `let [ ... ] = accounts else { ... }` pattern as Make. Check `taker.is_signer()`.
+### 1 · Destructure and check the signer
 
-2. **Load the escrow state** with `Escrow::from_account_info(escrow_account)?`. Before trusting it, verify `escrow_account.owned_by(&crate::ID)`, otherwise anyone could pass a fake account with a fake `maker`.
+Your handler takes `accounts: &mut [AccountView]`, same as `process_make_instruction`. Destructure with the same `let [ ... ] = accounts else { ... }` pattern, with the twelve accounts above, so every binding is already a `&mut AccountView`. Then check `taker.is_signer()`.
 
-3. **Cross-check the passed accounts against the state.** `maker.address()` must equal `escrow.maker()`, and the two mints must match `escrow.mint_a()` / `escrow.mint_b()`. Copy out `amount_to_receive`, `bump`, and the maker address into local variables now, *then drop the escrow borrow* (end the block). You are about to CPI with `escrow_account` as a signer, and a live borrow will fail.
+### 2 · Load the escrow state, and trust it only after checking the owner
 
-4. **Re-derive the PDA** with `derive_address(&[b"escrow", maker.address().as_ref(), &[bump]], None, &crate::ID.to_bytes())` and confirm it matches `escrow_account`. This is what proves the escrow belongs to *this* maker with *this* bump.
+`Escrow::from_account_info(escrow_account)?` gives you the state. Before trusting anything in it, verify `escrow_account.owned_by(&crate::ID)`. Otherwise anyone could pass a fake account with a fake `maker`.
 
-5. **Validate the vault.** Load it with `pinocchio_token::state::Account::from_account_view`, check `owner() == escrow_account.address()` and `mint() == mint_a.address()`, read `amount()` into a local (this is how much A the taker will receive), drop the borrow.
+### 3 · Cross-check the passed accounts against the state
 
-6. **Make sure the destination ATAs exist.** `taker_ata_a` and `maker_ata_b` may not have been created yet. Use `pinocchio_associated_token_account::instructions::CreateIdempotent` (safe to call if they already exist) with `taker` as the funding account. Then validate `taker_ata_b` the same way you validated `maker_ata` in Make (owner = taker, mint = mint_b).
+`maker.address()` must equal `escrow.maker()`, and the two mints must match `escrow.mint_a()` and `escrow.mint_b()`. Copy `amount_to_receive` and `bump` into locals now, then end the block so the borrow drops. You are about to CPI with `escrow_account` as a signer, and a live borrow will fail.
 
-7. **CPI #1: taker pays maker.** `pinocchio_token::instructions::Transfer { from: taker_ata_b, to: maker_ata_b, authority: taker, multisig_signers: &[] as &[&AccountView], amount: amount_to_receive }.invoke()`. Plain `invoke`, since the taker signed the transaction.
+```rust
+let (amount_to_receive, bump) = {
+    let escrow = Escrow::from_account_info(escrow_account)?;
+    if escrow.maker()  != *maker.address()  { return Err(ProgramError::InvalidAccountData); }
+    if escrow.mint_a() != *mint_a.address() { return Err(ProgramError::InvalidAccountData); }
+    if escrow.mint_b() != *mint_b.address() { return Err(ProgramError::InvalidAccountData); }
+    (escrow.amount_to_receive(), escrow.bump)
+};   // ← borrow released here
+```
 
-8. **Build the PDA signer.** Exactly as in Make step 5, but with `bump` read from state:
-   ```rust
-   let bump_bytes = [bump];
-   let seed  = [Seed::from(b"escrow"), Seed::from(maker.address().as_array()), Seed::from(&bump_bytes)];
-   let signer = Signer::from(&seed);
-   ```
+### 4 · Re-derive the PDA
 
-9. **CPI #2: vault pays taker.** `Transfer { from: vault, to: taker_ata_a, authority: escrow_account, multisig_signers: &[] as &[&AccountView], amount: vault_amount }.invoke_signed(&[signer.clone()])`. The vault's authority is the PDA, so this **must** be `invoke_signed`.
+`derive_address(&[b"escrow", maker.address().as_ref(), &[bump]], None, &crate::ID.to_bytes())` must equal `escrow_account.address()`. This is what proves the escrow belongs to *this* maker with *this* bump.
 
-10. **CPI #3: close the vault.** `pinocchio_token::instructions::CloseAccount { account: vault, destination: maker, authority: escrow_account, multisig_signers: &[] as &[&AccountView] }.invoke_signed(&[signer.clone()])`. The vault's rent lamports go back to the maker, who paid for it.
+### 5 · Validate the vault
 
-11. **Close the escrow account.** The escrow is owned by *this* program, so there is no CPI. Two steps:
-    * Move the lamports out first, or the runtime rejects the instruction as unbalanced:
-      ```rust
-      maker.set_lamports(maker.lamports() + escrow_account.lamports());
-      escrow_account.set_lamports(0);
-      ```
-    * Then `escrow_account.close()?`. `AccountView::close` zeroes the account's data length, lamports and owner in one go. Both `set_lamports` and `close` take `&mut self`, which is why the accounts slice is mutable. `close` fails with `AccountBorrowFailed` if you still hold a borrow on the escrow data, which is another reason to copy the fields out and drop the borrow back in step 3.
+Load it with `pinocchio_token::state::Account::from_account_view`, check `owner() == escrow_account.address()` and `mint() == mint_a.address()`, read `amount()` into a local. That is how much A the taker will receive. Drop the borrow.
 
-12. **Wire it up.** Add `pub mod take; pub use take::*;` to `instructions/mod.rs` and the match arm in `lib.rs`.
+### 6 · Make sure the destination ATAs exist
 
-**Test to write (`test_take_instruction`):**
+`taker_ata_a` and `maker_ata_b` may not have been created yet. Use `pinocchio_associated_token_account::instructions::CreateIdempotent`, which is safe to call if they already exist, with `taker` as the funding account. Then validate `taker_ata_b` the same way Make validated `maker_ata`: owner = taker, mint = mint_b.
 
-Reuse the Make setup, then create a second keypair `taker`, airdrop SOL, create `taker_ata_b`, mint 100 B into it. Send the Take instruction. Then assert:
+<details>
+<summary>Hint: <code>CreateIdempotent</code> has the same shape as <code>Create</code></summary>
 
-* `taker_ata_a` balance == 500 A
-* `maker_ata_b` balance == 100 B
-* `svm.get_account(&vault)` is `None` (or has 0 lamports / system owner)
-* `svm.get_account(&escrow)` is `None` (or has 0 lamports / system owner)
-* Maker's SOL balance went **up** by roughly the rent of both closed accounts
+```rust
+pinocchio_associated_token_account::instructions::CreateIdempotent {
+    funding_account: taker,
+    account: taker_ata_a,
+    wallet: taker,
+    mint: mint_a,
+    system_program,
+    token_program,
+}.invoke()?;
+// and again for maker_ata_b with wallet: maker, mint: mint_b
+```
 
-Also write **at least one negative test**: a taker who has only 50 B should fail, and Take on an escrow whose `maker` account does not match the state should fail.
+</details>
 
-### 4.2 Cancel (`discriminator = 2`)
+> **From here on, write it before you open the hint.** The remaining steps give you the requirement, not the code. Each one has the finished call behind a collapsed hint. Try it from the cheat sheet and from `make.rs` first; open the hint when you are stuck, not before.
 
-**Story:** Alice changes her mind before anyone takes the deal. She calls Cancel. The 500 A go back to her, the vault and escrow are closed, rent is refunded to her.
+### 7 · CPI #1, taker pays maker
 
-**Instruction data:** just the discriminator.
+Transfer `amount_to_receive` of mint B from `taker_ata_b` to `maker_ata_b`. The authority is the taker, who signed the transaction, so this is a plain `invoke()`.
 
-**Accounts (suggested order):**
+<details>
+<summary>Hint: the transfer call</summary>
+
+```rust
+pinocchio_token::instructions::Transfer {
+    from: taker_ata_b,
+    to: maker_ata_b,
+    authority: taker,
+    multisig_signers: &[] as &[&AccountView],
+    amount: amount_to_receive,
+}.invoke()?;
+```
+
+</details>
+
+### 8 · Build the PDA signer, then CPI #2, vault pays taker
+
+The vault's authority is the escrow PDA, not any wallet, so this transfer must be `invoke_signed` with a `Signer` built from the same three seeds Make used: `b"escrow"`, the maker's address, and the bump. The bump comes from state, not from instruction data.
+
+Move `vault_amount`, the balance you read in step 5, not `amount_to_give` from state, out of the vault and into `taker_ata_a`.
+
+<details>
+<summary>Hint: signing as the PDA</summary>
+
+```rust
+let bump_bytes = [bump];
+let seed   = [Seed::from(b"escrow"), Seed::from(maker.address().as_array()), Seed::from(&bump_bytes)];
+let signer = Signer::from(&seed);
+
+pinocchio_token::instructions::Transfer {
+    from: vault,
+    to: taker_ata_a,
+    authority: escrow_account,
+    multisig_signers: &[] as &[&AccountView],
+    amount: vault_amount,
+}.invoke_signed(&[signer.clone()])?;
+```
+
+</details>
+
+### 9 · CPI #3, close the vault
+
+An empty token account still holds rent. Close it with the token program's `CloseAccount`, again signed by the PDA, and send the lamports to the maker, who paid for it.
+
+### 10 · Close the escrow account, by hand
+
+The escrow is owned by *this* program, so there is no CPI for it. Two moves, in this order: add its lamports to the maker's balance and zero its own, then call `close()`. Skip the lamport move and the runtime rejects the instruction as unbalanced.
+
+`AccountView::close` zeroes the account's data length, lamports and owner in one go. Both `set_lamports` and `close` take `&mut self`, which is why the accounts slice is mutable. `close` fails with `AccountBorrowFailed` if you still hold a borrow on the escrow data, which is another reason to copy the fields out in step 3.
+
+<details>
+<summary>Hint: closing both accounts</summary>
+
+```rust
+pinocchio_token::instructions::CloseAccount {
+    account: vault,
+    destination: maker,
+    authority: escrow_account,
+    multisig_signers: &[] as &[&AccountView],
+}.invoke_signed(&[signer.clone()])?;
+
+maker.set_lamports(maker.lamports() + escrow_account.lamports());
+escrow_account.set_lamports(0);
+escrow_account.close()?;
+```
+
+</details>
+
+### 11 · Wire it up
+
+1. In `instructions/mod.rs`: `pub mod take; pub use take::*;`
+2. In `lib.rs`, replace the `_ =>` arm with a real one for `EscrowInstructions::Take`.
+3. `cargo build-sbf`. It must compile before you touch the tests.
+
+> **You are done when** `cargo build-sbf` succeeds and the account order comment at the top of `take.rs` matches the table above. The tests come in Challenge 3.
+
+---
+
+## 05 · Challenge 2 · shorter: Implement Cancel
+
+**Goal:** Alice changes her mind before anyone takes the deal. She calls Cancel. The 500 A go back to her, the vault and escrow are closed, and rent is refunded to her.
+
+**Why it matters:** without Cancel, a deposit nobody takes is locked forever. With a *wrong* Cancel, anyone can drain any escrow. This is the shortest instruction and the easiest to get dangerously wrong.
+
+**Instruction data:** just the discriminator, `2`.
+
+**Accounts, suggested order:**
 
 | #   | Account          | Writable | Signer | Notes                                        |
 | --- | ---------------- | -------- | ------ | -------------------------------------------- |
@@ -456,48 +615,221 @@ Also write **at least one negative test**: a taker who has only 50 B should fail
 | 4   | `maker_ata_a`    | ✅       |        | Destination for the returned A               |
 | 5   | `token_program`  |          |        |                                              |
 
-**Step-by-step:**
+> **`maker.is_signer()` is the critical authorization check.** Forget it, and anyone can drain any escrow back to its maker, which is annoying. Forget the stored-maker check too, and they can drain it to themselves, which is catastrophic.
+>
+> The stored maker and the PDA re-derivation still matter. `is_signer` proves who sent the transaction; those two prove it is the right escrow for that signer.
 
-1. Destructure. **`maker.is_signer()` is the whole security model of this instruction.** If you forget it, anyone can drain any escrow back to its maker (annoying) or, if you also forget the maker check, to themselves (catastrophic).
+### The steps
+
+1. Destructure. Check `maker.is_signer()`.
 2. Load escrow state, verify program ownership, verify `escrow.maker() == maker.address()` and `escrow.mint_a() == mint_a.address()`. Copy out `bump`, drop the borrow.
 3. Re-derive and check the PDA.
-4. Validate the vault (owner = escrow PDA, mint = mint A), read its balance, drop the borrow. Validate `maker_ata_a` (owner = maker, mint = mint A).
+4. Validate the vault: owner = escrow PDA, mint = mint A. Read its balance, drop the borrow. Validate `maker_ata_a`: owner = maker, mint = mint A.
 5. Build the PDA signer.
-6. `Transfer { from: vault, to: maker_ata_a, authority: escrow_account, multisig_signers: &[] as &[&AccountView], amount: vault_amount }.invoke_signed(...)`.
-7. `CloseAccount { account: vault, destination: maker, authority: escrow_account, multisig_signers: &[] as &[&AccountView] }.invoke_signed(...)`.
-8. Close the escrow account by hand (same as Take step 11).
-9. Wire up `cancel.rs` in `mod.rs` and `lib.rs`.
+6. `Transfer { from: vault, to: maker_ata_a, authority: escrow_account, multisig_signers: &[] as &[&AccountView], amount: vault_amount }.invoke_signed(...)`
+7. `CloseAccount { account: vault, destination: maker, authority: escrow_account, multisig_signers: &[] as &[&AccountView] }.invoke_signed(...)`
+8. Close the escrow account by hand, same as Take step 10.
+9. Wire up `cancel.rs` in `mod.rs` and `lib.rs`. Build.
 
-You will notice steps 4 to 8 are nearly identical to Take. Feel free to factor the "drain vault + close vault + close escrow" sequence into a shared helper.
+<details>
+<summary>Hint: steps 4 to 8 look familiar</summary>
 
-**Test to write (`test_cancel_instruction`):**
+They are the tail end of Take. Consider extracting "drain vault to a destination, close vault, close escrow" into a helper in `src/instructions/shared.rs` that takes the destination ATA and the PDA `Signer`. Both instructions then become validation plus one call. Any helper that mutates an account (`set_lamports`, `close`) must take `&mut AccountView`.
 
-After Make, send Cancel signed by the maker. Assert the maker's ATA is back to 1,000 A and both PDA accounts are gone. Then write the negative test that matters: a **different keypair** tries to Cancel Alice's escrow and the transaction fails. If that test passes, you have a bug.
+</details>
 
-### 4.3 Definition of done
-
-- [ ] `src/instructions/take.rs` implemented and wired into `mod.rs` + `lib.rs`
-- [ ] `src/instructions/cancel.rs` implemented and wired
-- [ ] `cargo build-sbf` succeeds with no new `unsafe` (the only one in the codebase is the pointer cast in `Escrow::from_account_info`)
-- [ ] `cargo test` runs Make → Take (happy path), Make → Cancel (happy path), and at least the two negative tests above, all green
-- [ ] A `Make → Take` round-trip costs under **50k CU** total (print `compute_units_consumed` like the Make test does)
-
-### 4.4 Hints when you get stuck
-
-* **"Account borrow failed" / `AccountBorrowFailed` at runtime.** You still hold a token `Account` or `Escrow` reference when you call `invoke`. Wrap the read in `{ }` and copy primitives out.
-* **`Cross-program invocation with unauthorized signer`.** Your `Seed`s do not reproduce the PDA. Check: is the bump the one stored in state? Is the maker address the *maker's*, not the taker's? Is the seed literal exactly `b"escrow"`?
-* **`invalid account data for instruction` from the Token program.** You are probably passing an account that is not yet initialised (forgot `CreateIdempotent`), or `from`/`to` mints do not match.
-* **Where is `CloseAccount` / `CreateIdempotent`?** `pinocchio_token::instructions::CloseAccount` and `pinocchio_associated_token_account::instructions::CreateIdempotent`. If your crate version lacks one, check the docs.rs page for the version pinned in `Cargo.toml`.
-* **`cannot borrow as mutable` / `types differ in mutability`.** In 0.11 the accounts slice is `&mut [AccountView]`, and `try_borrow_mut`, `set_lamports` and `close` need `&mut AccountView`. Destructure `accounts` directly (as Make does) so every binding is already mutable, and give any helper that mutates an account a `&mut AccountView` parameter.
-* **`missing field multisig_signers`.** Every `pinocchio-token` 0.6 instruction struct has it. Pass `&[] as &[&AccountView]` when you are not using a multisig; the cast is needed so the generic parameter can be inferred.
-* **`InsufficientFundsForRent` in a test that used to pass.** Your test's `setup()` is missing the `set_sysvar` Rent override described in §3.6.
-* **Where are the lamports / close helpers?** All on `AccountView`: `lamports()`, `set_lamports(u64)`, `close()`, `resize(usize)`, `owned_by(&Address)`. They come from the `solana-account-view` crate that `pinocchio` re-exports, so search that on docs.rs if you want the full list.
+> **You are done when** `cargo build-sbf` succeeds with both new match arms in `lib.rs`, and there is no `_ =>` arm silently swallowing `MakeV2`. Return an explicit error for it.
 
 ---
 
-## 5. Pinocchio cheat sheet
+## 06 · Challenge 3 · the proof: Prove it with tests
 
-Quick reference for the APIs used in this repo (`pinocchio = 0.11.2`, `pinocchio-token = 0.6.0`).
+**Goal:** four new LiteSVM tests. Two happy paths that read state back, and two negative tests that must fail for the right reason.
+
+**Why it matters:** a Take that "works" but leaves the escrow open, or a Cancel that a stranger can call, both pass a test that only checks the transaction succeeded.
+
+### 1 · Factor the Make setup into a helper
+
+Every test starts the same way: two mints, a funded maker ATA, a Make transaction. Pull that out of `test_make_instruction` into a function that returns what the next steps need: the `svm`, the maker, both mints, the escrow PDA and bump, and the vault address.
+
+> **Keep the Rent override.** Your helper must still call `svm.set_sysvar` the way `setup()` does, or every test you write from here fails at the Make step with `InsufficientFundsForRent`. Reuse `setup()` rather than building a fresh LiteSVM by hand.
+
+### 2 · `test_take_instruction`
+
+1. Run the Make helper.
+2. Create a second keypair, `taker`. Airdrop it SOL. Create `taker_ata_b` and mint 100 B into it.
+3. Derive `taker_ata_a` and `maker_ata_b` with `get_associated_token_address`. Do *not* create them. Your program does that with `CreateIdempotent`.
+4. Build the instruction: data `vec![1u8]`, the twelve `AccountMeta`s in the order from Challenge 1, signed by the taker.
+5. Send it, print `compute_units_consumed`.
+
+Then assert:
+
+| Read back                  | Expect                                                |
+| -------------------------- | ----------------------------------------------------- |
+| `taker_ata_a.amount`       | 500 A                                                 |
+| `maker_ata_b.amount`       | 100 B                                                 |
+| `svm.get_account(&vault)`  | `None`, or 0 lamports and system owner                |
+| `svm.get_account(&escrow)` | `None`, or 0 lamports and system owner                |
+| maker SOL balance          | Went up by roughly the rent of both closed accounts   |
+
+### 3 · `test_cancel_instruction`
+
+After Make, send Cancel signed by the maker: data `vec![2u8]`, the six accounts from Challenge 2. Assert the maker's ATA is back to 1,000 A and both PDA accounts are gone.
+
+### 4 · Two negative tests
+
+| Test                                        | Expect             | What it proves                                                                     |
+| ------------------------------------------- | ------------------ | ---------------------------------------------------------------------------------- |
+| Take by a taker who has only 50 B           | Transaction fails  | The token program rejects the underfunded transfer, and nothing else moved         |
+| Cancel signed by a different keypair        | Transaction fails  | The maker check and the signer check both hold                                     |
+
+> **If the stranger's Cancel passes, you have a bug.** This is the one test that matters most in the whole assignment. Do not `unwrap()` the send here; assert it returns `Err`. Then read the vault back and confirm the 500 A are still there.
+
+<details>
+<summary>Hint: asserting a failed transaction in LiteSVM</summary>
+
+```rust
+let result = svm.send_transaction(tx);
+assert!(result.is_err(), "a stranger must not be able to cancel someone else's escrow");
+
+let vault_acc = svm.get_account(&vault).unwrap();
+let vault_state = spl_token_2022::state::Account::unpack(&vault_acc.data).unwrap();
+assert_eq!(vault_state.amount, 500_000_000);   // A never left
+```
+
+</details>
+
+<details>
+<summary>Hint: Take on a mismatched maker should fail too</summary>
+
+Optional fifth negative test: send a Take where the `maker` account does not match `escrow.maker()`. The cross-check in Take step 3 must reject it before any token moves. Same assertion pattern as above.
+
+</details>
+
+### 5 · Definition of done
+
+- [ ] `src/instructions/take.rs` implemented and wired into `mod.rs` and `lib.rs`.
+- [ ] `src/instructions/cancel.rs` implemented and wired.
+- [ ] `cargo build-sbf` succeeds with no new `unsafe`. The only one in the codebase is the pointer cast in `Escrow::from_account_info`; you should not need another.
+- [ ] `cargo test` runs Make → Take, Make → Cancel, and at least the two negative tests above, all green.
+- [ ] Every test prints `compute_units_consumed`, like the Make test does, and you have compared Take and Cancel against Make's ~30k. There is no fixed budget to hit, but a number far above Make's is worth a look at how many CPIs you are making.
+
+> **You are done when** five tests pass, the stranger's Cancel fails, and you can say what Take and Cancel cost next to Make. Push it.
+
+---
+
+## When it breaks: Troubleshooting
+
+<details>
+<summary><code>Failed to read program SO file … Run `cargo build-sbf` first</code></summary>
+
+The tests load `target/deploy/escrow.so` and it is not there. Run `cargo build-sbf`, then `cargo test`.
+
+</details>
+
+<details>
+<summary>My change does nothing in the tests</summary>
+
+You edited the program but did not rebuild the `.so`. `cargo test` compiles the crate for your CPU, not for SBF. Run `cargo build-sbf` again; the tests pick up the new binary.
+
+</details>
+
+<details>
+<summary><code>InsufficientFundsForRent</code> in a test</summary>
+
+Your test setup lost the Rent sysvar override. Pinocchio 0.11 computes rent the SIMD-0194 way and LiteSVM 0.9.1 seeds the legacy sysvar, so the program asks for half the required lamports. Keep the `svm.set_sysvar(...)` line from `setup()` in every helper. See "How the test drives it" in checkpoint 03.
+
+</details>
+
+<details>
+<summary><code>Account borrow failed</code> / <code>AccountBorrowFailed</code></summary>
+
+A `Ref` on the account's data (from `Account::from_account_view` or `Escrow::from_account_info`) is still alive when you CPI or call `close()`. Wrap the read in `{ }`, copy primitives out, and let the borrow drop before you invoke anything.
+
+</details>
+
+<details>
+<summary><code>cannot borrow as mutable</code>, or <code>types differ in mutability</code></summary>
+
+In 0.11 the accounts slice is `&mut [AccountView]`, and `try_borrow_mut`, `set_lamports` and `close` need `&mut AccountView`. Destructure `accounts` directly, as Make does, so every binding is already mutable, and give any helper that mutates an account a `&mut AccountView` parameter. Your handler signature must be `accounts: &mut [AccountView]`.
+
+</details>
+
+<details>
+<summary><code>missing field `multisig_signers`</code></summary>
+
+Every `pinocchio-token` 0.6 instruction struct has it and there is no `Default`. Pass `multisig_signers: &[] as &[&AccountView]` when you are not using a multisig; the cast lets the generic parameter be inferred from an empty slice.
+
+</details>
+
+<details>
+<summary><code>cannot find type `TokenAccount` in `pinocchio_token::state`</code></summary>
+
+You copied from an older tutorial. In `pinocchio-token` 0.6 the type is `pinocchio_token::state::Account`.
+
+</details>
+
+<details>
+<summary><code>Cross-program invocation with unauthorized signer</code></summary>
+
+Your `Seed`s do not reproduce the PDA. Check three things: the bump is the one stored in state, the address is the *maker's* (not the taker's), and the literal is exactly `b"escrow"`.
+
+</details>
+
+<details>
+<summary><code>invalid account data for instruction</code>, from the Token program</summary>
+
+You are passing an account that is not initialised yet (forgot `CreateIdempotent` for `taker_ata_a` or `maker_ata_b`), or the `from` and `to` accounts have different mints.
+
+</details>
+
+<details>
+<summary><code>InvalidInstructionData</code> when I send Take</summary>
+
+The `_ =>` arm in `lib.rs` is still catching discriminator `1`. Add the real match arm for `EscrowInstructions::Take`, then `cargo build-sbf`.
+
+</details>
+
+<details>
+<summary><code>NotEnoughAccountKeys</code></summary>
+
+Your test passes fewer accounts than the handler destructures. Count against the table: Take needs 12, Cancel needs 6.
+
+</details>
+
+<details>
+<summary><code>sum of account balances before and after instruction do not match</code></summary>
+
+You called `close()` on the escrow (or let the vault close) without moving its lamports first. Do the `set_lamports` pair, then `close()`. Lamports can never disappear inside an instruction; they have to land somewhere.
+
+</details>
+
+<details>
+<summary><code>duplicate symbol: entrypoint</code></summary>
+
+An SPL program crate in `[dev-dependencies]` is missing `features = ["no-entrypoint"]`, so its entrypoint collides with the one Pinocchio generates. Add the feature to the crate you just added.
+
+</details>
+
+<details>
+<summary>Do I need an <code>unsafe</code> block to check the owner?</summary>
+
+No. In 0.11 `AccountView::owner()` is a safe fn, and `owned_by(&crate::ID)` is the shortest way to write the check. The only `unsafe` in this codebase is the pointer cast inside `Escrow::from_account_info`.
+
+</details>
+
+<details>
+<summary>Where is <code>CloseAccount</code> / <code>CreateIdempotent</code> / <code>set_lamports</code>?</summary>
+
+`pinocchio_token::instructions::CloseAccount`, `pinocchio_associated_token_account::instructions::CreateIdempotent`, and `set_lamports`, `lamports`, `close`, `owned_by` are methods on `AccountView` (from the `solana-account-view` crate that `pinocchio` re-exports). If your IDE cannot find one, check that `Cargo.toml` still pins the versions in the table at the top.
+
+</details>
+
+---
+
+## Pinocchio cheat sheet
+
+Quick reference for the APIs used in this repo: `pinocchio = 0.11.2`, `pinocchio-token = 0.6.0`.
 
 | I want to…                                | Use                                                                              |
 | ----------------------------------------- | -------------------------------------------------------------------------------- |
@@ -511,8 +843,8 @@ Quick reference for the APIs used in this repo (`pinocchio = 0.11.2`, `pinocchio
 | Create an ATA                             | `pinocchio_associated_token_account::instructions::Create { .. }` / `CreateIdempotent { .. }` |
 | Transfer SPL tokens                       | `pinocchio_token::instructions::Transfer { from, to, authority, multisig_signers, amount }` |
 | Close an SPL token account                | `pinocchio_token::instructions::CloseAccount { account, destination, authority, multisig_signers }` |
-| No multisig                               | `multisig_signers: &[] as &[&AccountView]`                                       |
-| Rent-exempt minimum                       | `Rent::get()?.try_minimum_balance(space)?`                                       |
+| Say "no multisig"                         | `multisig_signers: &[] as &[&AccountView]`                                       |
+| Rent-exempt minimum                       | `Rent::get()?.try_minimum_balance(space)?` → `(128 + space) * lamports_per_byte` |
 | Read / move lamports                      | `account.lamports()`, `account.set_lamports(n)`                                  |
 | Close a program-owned account             | move lamports out, then `account.close()?`                                       |
 | Log something                             | `pinocchio_log::log!("value: {}", x)`                                            |
