@@ -28,6 +28,17 @@ mod tests {
         let mut svm = LiteSVM::new();
         let payer = Keypair::new();
 
+        // LiteSVM 0.9 still ships the pre-SIMD-0194 Rent sysvar (3480 lamports/byte-year,
+        // 2-year exemption threshold). Mainnet has activated SIMD-0194, which folds the
+        // threshold into the rate (6960 lamports/byte, threshold 1.0), and pinocchio 0.11
+        // computes rent exemption that way. Set the sysvar to match the live cluster.
+        #[allow(deprecated)]
+        svm.set_sysvar(&solana_rent::Rent {
+            lamports_per_byte_year: 6960,
+            exemption_threshold: 1.0,
+            burn_percent: 50,
+        });
+
         svm
             .airdrop(&payer.pubkey(), 10 * LAMPORTS_PER_SOL)
             .expect("Airdrop failed");

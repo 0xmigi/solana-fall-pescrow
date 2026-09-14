@@ -18,7 +18,7 @@ impl Escrow {
     /// Derived from the struct itself so it can never drift out of sync with the fields (113 bytes).
     pub const LEN: usize = core::mem::size_of::<Self>();
 
-    pub fn from_account_info(account_info: &AccountView) -> Result<&mut Self, ProgramError> {
+    pub fn from_account_info(account_info: &mut AccountView) -> Result<&mut Self, ProgramError> {
         let mut data = account_info.try_borrow_mut()?;
         if data.len() != Escrow::LEN {
             return Err(ProgramError::InvalidAccountData);

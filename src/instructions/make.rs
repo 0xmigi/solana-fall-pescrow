@@ -10,7 +10,7 @@ use crate::state::Escrow;
 const MAKE_DATA_LEN: usize = 17;
 
 pub fn process_make_instruction(
-    accounts: &[AccountView],
+    accounts: &mut [AccountView],
     data: &[u8],
 ) -> ProgramResult {
 
@@ -30,7 +30,7 @@ pub fn process_make_instruction(
 
     // Scope the borrow so it is released before any CPI below borrows `maker_ata`.
     {
-        let maker_ata_state = pinocchio_token::state::TokenAccount::from_account_view(&maker_ata)?;
+        let maker_ata_state = pinocchio_token::state::Account::from_account_view(maker_ata)?;
         if maker_ata_state.owner() != maker.address() {
             return Err(ProgramError::IllegalOwner);
         }
@@ -64,31 +64,28 @@ pub fn process_make_instruction(
     let seed = [Seed::from(b"escrow"), Seed::from(maker.address().as_array()), Seed::from(&bump_bytes)];
     let seeds = Signer::from(&seed);
 
-    unsafe {
-        if escrow_account.owner() != &crate::ID {
-            CreateAccount {
-                from: maker,
-                to: escrow_account,
-                lamports: Rent::get()?.try_minimum_balance(Escrow::LEN)?,
-                space: Escrow::LEN as u64,
-                owner: &crate::ID,
-            }.invoke_signed(&[seeds.clone()])?;
+    // Refuse to overwrite an escrow that already exists for this maker.
+    if escrow_account.owned_by(&crate::ID) {
+        return Err(ProgramError::AccountAlreadyInitialized);
+    }
 
+    CreateAccount {
+        from: maker,
+        to: escrow_account,
+        lamports: Rent::get()?.try_minimum_balance(Escrow::LEN)?,
+        space: Escrow::LEN as u64,
+        owner: &crate::ID,
+    }.invoke_signed(&[seeds.clone()])?;
 
-            {
-                let escrow_state = Escrow::from_account_info(escrow_account)?;
-            
-                escrow_state.set_maker(maker.address());
-                escrow_state.set_mint_a(mint_a.address());
-                escrow_state.set_mint_b(mint_b.address());
-                escrow_state.set_amount_to_receive(amount_to_receive);
-                escrow_state.set_amount_to_give(amount_to_give);  
-                escrow_state.bump = bump;
-            }
-        }
-        else {
-            return Err(ProgramError::IllegalOwner);
-        }
+    // Scoped so the mutable borrow on the escrow data is released before the CPIs below.
+    {
+        let escrow_state = Escrow::from_account_info(escrow_account)?;
+        escrow_state.set_maker(maker.address());
+        escrow_state.set_mint_a(mint_a.address());
+        escrow_state.set_mint_b(mint_b.address());
+        escrow_state.set_amount_to_receive(amount_to_receive);
+        escrow_state.set_amount_to_give(amount_to_give);
+        escrow_state.bump = bump;
     }
 
     pinocchio_associated_token_account::instructions::Create {
@@ -104,6 +101,7 @@ pub fn process_make_instruction(
         from: maker_ata,
         to: escrow_ata,
         authority: maker,
+        multisig_signers: &[] as &[&AccountView],
         amount: amount_to_give,
     }.invoke()?;
 
