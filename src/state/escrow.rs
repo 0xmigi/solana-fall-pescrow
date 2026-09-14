@@ -1,4 +1,4 @@
-use pinocchio::{AccountView, error::ProgramError};
+use pinocchio::{AccountView, account::RefMut, error::ProgramError};
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -18,17 +18,22 @@ impl Escrow {
     /// Derived from the struct itself so it can never drift out of sync with the fields (113 bytes).
     pub const LEN: usize = core::mem::size_of::<Self>();
 
-    pub fn from_account_info(account_info: &mut AccountView) -> Result<&mut Self, ProgramError> {
-        let mut data = account_info.try_borrow_mut()?;
+    /// Borrow the account data as a typed, mutable `Escrow` view.
+    ///
+    /// The returned `RefMut` keeps the account's borrow flag set for as long as it is
+    /// alive, so the runtime (and Rust) will refuse any CPI or second borrow on this
+    /// account until you drop it. Read what you need into locals, then let it go.
+    pub fn load_mut(account: &mut AccountView) -> Result<RefMut<'_, Self>, ProgramError> {
+        let data = account.try_borrow_mut()?;
         if data.len() != Escrow::LEN {
             return Err(ProgramError::InvalidAccountData);
         }
-
         if (data.as_ptr() as usize) % core::mem::align_of::<Self>() != 0 {
             return Err(ProgramError::InvalidAccountData);
         }
-
-        Ok(unsafe { &mut *(data.as_mut_ptr() as *mut Self) })
+        // SAFETY: `#[repr(C)]`, alignment 1, and the length check above make the cast sound.
+        // `RefMut::map` keeps the borrow guard alive, so this is the only borrow of the data.
+        Ok(RefMut::map(data, |bytes| unsafe { &mut *(bytes.as_mut_ptr() as *mut Self) }))
     }
 
     pub fn maker(&self) -> pinocchio::Address {

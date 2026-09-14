@@ -109,14 +109,13 @@ mod tests {
 
         let amount_to_receive: u64 = 100000000; // 100 tokens with 6 decimal places
         let amount_to_give: u64 = 500000000;    // 500 tokens with 6 decimal places
-        let bump: u8 = escrow.1;
+        let bump: u8 = escrow.1;   // canonical bump; the program derives the same one on-chain
 
         println!("Bump: {}", bump);
 
         // Create the "Make" instruction to deposit tokens into the escrow
         let make_data = [
             vec![0u8],              // Discriminator for "Make" instruction
-            bump.to_le_bytes().to_vec(),
             amount_to_receive.to_le_bytes().to_vec(),
             amount_to_give.to_le_bytes().to_vec(),
         ].concat();

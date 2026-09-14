@@ -223,13 +223,15 @@ pub struct Escrow {
 impl Escrow {
     pub const LEN: usize = core::mem::size_of::<Self>();   // 113. Let the compiler count, never hand-write the sum
 
-    pub fn from_account_info(account_info: &mut AccountView) -> Result<&mut Self, ProgramError> {
-        let mut data = account_info.try_borrow_mut()?;
+    /// Borrow the account data as a typed, mutable Escrow view. The RefMut keeps the
+    /// account's borrow flag set until you drop it.
+    pub fn load_mut(account: &mut AccountView) -> Result<RefMut<'_, Self>, ProgramError> {
+        let data = account.try_borrow_mut()?;
         if data.len() != Escrow::LEN { return Err(ProgramError::InvalidAccountData); }
         if (data.as_ptr() as usize) % core::mem::align_of::<Self>() != 0 {
             return Err(ProgramError::InvalidAccountData);
         }
-        Ok(unsafe { &mut *(data.as_mut_ptr() as *mut Self) })
+        Ok(RefMut::map(data, |bytes| unsafe { &mut *(bytes.as_mut_ptr() as *mut Self) }))
     }
 
     pub fn amount_to_give(&self) -> u64 { u64::from_le_bytes(self.amount_to_give) }
@@ -241,8 +243,9 @@ impl Escrow {
 * `#[repr(C)]` pins the field order and layout so we can reinterpret the account's byte buffer as `&mut Escrow` with a pointer cast. Writing to the struct writes straight into the account.
 * The `u64`s are stored as `[u8; 8]` on purpose. A real `u64` field would force 8-byte alignment, and account data buffers are not guaranteed to be aligned. Byte arrays have alignment 1, so the cast is always sound.
 * The getters and setters do the little-endian conversion on the way in and out. You will use `escrow.maker()`, `escrow.mint_b()`, `escrow.amount_to_receive()` and `escrow.bump` heavily in Take and Cancel.
+* `load_mut` returns a `RefMut<Escrow>`, not a bare `&mut Escrow`. `RefMut::map` re-types the guard from `[u8]` to `Escrow` without releasing it, so the account's borrow flag stays set for as long as the view lives. A version that returned `&mut Escrow` and let the guard drop inside the function would silently switch that protection off; Rust would still stop you from reusing the same binding, but nothing would catch the same account arriving twice in the accounts list.
 
-> **A borrow you must remember to drop.** `from_account_info` calls `try_borrow_mut()` on the account. While that `&mut Escrow` is alive, any CPI that touches the same account fails with `AccountBorrowFailed`. Read what you need into locals, then let the reference go out of scope before you invoke anything. This will bite you in Take.
+> **A borrow you must remember to drop.** `load_mut` calls `try_borrow_mut()` on the account and hands you the guard. While that `RefMut<Escrow>` is alive, any CPI that touches the same account fails with `AccountBorrowFailed`, and `close()` refuses too. Read what you need into locals, then let the guard go out of scope before you invoke anything. This will bite you in Take.
 
 ---
 
@@ -288,17 +291,16 @@ Anchor's `token::authority = maker, token::mint = mint_a` constraints, done by h
 
 ### 3 · Parse instruction data
 
-Layout after the discriminator byte: `[bump: u8][amount_to_receive: u64 LE][amount_to_give: u64 LE]`.
+Layout after the discriminator byte: `[amount_to_receive: u64 LE][amount_to_give: u64 LE]`. No bump: the program derives that itself in step 4.
 
 ```rust
-const MAKE_DATA_LEN: usize = 17;   // 1 + 8 + 8
+const MAKE_DATA_LEN: usize = 16;   // 8 + 8
 
 if data.len() < MAKE_DATA_LEN {
     return Err(ProgramError::InvalidInstructionData);
 }
-let bump = data[0];
-let amount_to_receive = u64::from_le_bytes(data[1..9].try_into().unwrap());
-let amount_to_give    = u64::from_le_bytes(data[9..17].try_into().unwrap());
+let amount_to_receive = u64::from_le_bytes(data[0..8].try_into().unwrap());
+let amount_to_give    = u64::from_le_bytes(data[8..16].try_into().unwrap());
 
 if !maker.is_signer() {
     return Err(ProgramError::MissingRequiredSignature);
@@ -309,15 +311,17 @@ if !maker.is_signer() {
 
 ### 4 · Verify the PDA
 
-Anchor's `seeds = [b"escrow", maker.key().as_ref()], bump` constraint. We take the bump from the client rather than calling `find_program_address` on-chain, because that loops over up to 255 candidates. `derive_address` with a known bump is a single hash.
+Anchor's `seeds = [b"escrow", maker.key().as_ref()], bump` constraint. Make derives the **canonical** bump on-chain with `find_program_address` and stores it in the escrow (step 5). It never accepts a bump from the client.
 
 ```rust
-let seed = [b"escrow".as_ref(), maker.address().as_ref(), &[bump]];
-let escrow_account_pda = derive_address(&seed, None, &crate::ID.to_bytes());
-if escrow_account_pda != *escrow_account.address().as_array() {
+let (escrow_account_pda, bump) =
+    Address::find_program_address(&[b"escrow", maker.address().as_ref()], &crate::ID);
+if escrow_account_pda != *escrow_account.address() {
     return Err(ProgramError::InvalidSeeds);
 }
 ```
+
+> **Why not let the client send the bump?** With seeds `["escrow", maker]` every valid bump gives a different address, so a client-chosen bump would let one maker open several "the" escrows, and any client that looks the escrow up with `find_program_address` would only ever see the canonical one. Deriving the bump once at init closes that hole. It loops over candidate bumps (a few thousand CU in the worst case, once per escrow); Take and Cancel avoid the loop by re-deriving from the *stored* bump with `derive_address`, which is a single hash. If you ever need several escrows per maker, add an explicit seed such as an `escrow_id` rather than reusing the bump for it.
 
 Return an error rather than `assert_eq!`. A panic surfaces to the client as a generic "program failed to complete", while `InvalidSeeds` says exactly what went wrong.
 
@@ -343,9 +347,9 @@ CreateAccount {
     owner: &crate::ID,
 }.invoke_signed(&[seeds.clone()])?;
 
-// Scoped so the mutable borrow on the escrow data is released before the CPIs below.
+// Scoped so the RefMut guard on the escrow data is released before the CPIs below.
 {
-    let escrow_state = Escrow::from_account_info(escrow_account)?;
+    let mut escrow_state = Escrow::load_mut(escrow_account)?;
     escrow_state.set_maker(maker.address());
     escrow_state.set_mint_a(mint_a.address());
     escrow_state.set_mint_b(mint_b.address());
@@ -357,7 +361,7 @@ CreateAccount {
 
 Note the shape: an early return on the "already exists" case, then the happy path straight down the function. Guard clauses read better than nesting the whole instruction inside an `if`, and `AccountAlreadyInitialized` tells the client more than `IllegalOwner` would.
 
-> **This `Signer` is the whole trick.** `invoke_signed` is how a program "signs" as a PDA: it proves to the runtime that it knows the seeds that produce that address. You will build exactly this `Signer` in Take and Cancel, except the bump comes from `escrow_state.bump` instead of instruction data.
+> **This `Signer` is the whole trick.** `invoke_signed` is how a program "signs" as a PDA: it proves to the runtime that it knows the seeds that produce that address. You will build exactly this `Signer` in Take and Cancel, except the bump comes from `escrow_state.bump` instead of `find_program_address`.
 
 > **How much rent the account needs.** `Rent::get()?.try_minimum_balance(len)` returns `(128 + len) * lamports_per_byte`. Pinocchio 0.11 follows SIMD-0194, which folded the old 2.0-year exemption threshold into the rate: one integer multiply, no floating point, 8 CU instead of ~256.
 >
@@ -403,7 +407,7 @@ Done. Three CPIs, about 30k CU total.
 1. Creates two mints, A and B, with 6 decimals.
 2. Creates the maker's ATA for A and mints 1,000 A into it.
 3. Derives the escrow PDA with `Pubkey::find_program_address(&[b"escrow", maker], &PROGRAM_ID)` and the vault with `get_associated_token_address(&escrow, &mint_a)`.
-4. Builds the instruction data `[0u8, bump, amount_to_receive LE, amount_to_give LE]` and the 9 `AccountMeta`s in the order from step 1.
+4. Builds the instruction data `[0u8, amount_to_receive LE, amount_to_give LE]` and the 9 `AccountMeta`s in the order from step 1. The test still calls `find_program_address` to know the escrow *address* and to check the stored bump afterwards, but it does not send the bump.
 5. Sends the transaction and prints CU usage.
 6. Reads the accounts back and asserts the vault holds 500 A, the maker's ATA dropped to 500 A, and the escrow's 113 bytes contain the maker, both mints, both amounts and the bump.
 
@@ -467,7 +471,7 @@ Your handler takes `accounts: &mut [AccountView]`, same as `process_make_instruc
 
 ### 2 · Load the escrow state, and trust it only after checking the owner
 
-`Escrow::from_account_info(escrow_account)?` gives you the state. Before trusting anything in it, verify `escrow_account.owned_by(&crate::ID)`. Otherwise anyone could pass a fake account with a fake `maker`.
+`Escrow::load_mut(escrow_account)?` gives you a `RefMut<Escrow>`. Before trusting anything in it, verify `escrow_account.owned_by(&crate::ID)`. Otherwise anyone could pass a fake account with a fake `maker`.
 
 ### 3 · Cross-check the passed accounts against the state
 
@@ -475,17 +479,17 @@ Your handler takes `accounts: &mut [AccountView]`, same as `process_make_instruc
 
 ```rust
 let (amount_to_receive, bump) = {
-    let escrow = Escrow::from_account_info(escrow_account)?;
+    let escrow = Escrow::load_mut(escrow_account)?;
     if escrow.maker()  != *maker.address()  { return Err(ProgramError::InvalidAccountData); }
     if escrow.mint_a() != *mint_a.address() { return Err(ProgramError::InvalidAccountData); }
     if escrow.mint_b() != *mint_b.address() { return Err(ProgramError::InvalidAccountData); }
     (escrow.amount_to_receive(), escrow.bump)
-};   // ← borrow released here
+};   // ← RefMut guard dropped here
 ```
 
 ### 4 · Re-derive the PDA
 
-`derive_address(&[b"escrow", maker.address().as_ref(), &[bump]], None, &crate::ID.to_bytes())` must equal `escrow_account.address()`. This is what proves the escrow belongs to *this* maker with *this* bump.
+`derive_address(&[b"escrow", maker.address().as_ref(), &[bump]], None, &crate::ID.to_bytes())` (from `pinocchio_pubkey`) must equal `escrow_account.address()`. The bump is the canonical one Make stored, so this is a single hash, no loop. It is what proves the escrow belongs to *this* maker with *this* bump.
 
 ### 5 · Validate the vault
 
@@ -535,7 +539,7 @@ pinocchio_token::instructions::Transfer {
 
 ### 8 · Build the PDA signer, then CPI #2, vault pays taker
 
-The vault's authority is the escrow PDA, not any wallet, so this transfer must be `invoke_signed` with a `Signer` built from the same three seeds Make used: `b"escrow"`, the maker's address, and the bump. The bump comes from state, not from instruction data.
+The vault's authority is the escrow PDA, not any wallet, so this transfer must be `invoke_signed` with a `Signer` built from the same three seeds Make used: `b"escrow"`, the maker's address, and the bump. The bump comes from state; you never recompute it with `find_program_address` here.
 
 Move `vault_amount`, the balance you read in step 5, not `amount_to_give` from state, out of the vault and into `taker_ata_a`.
 
@@ -710,7 +714,7 @@ Optional fifth negative test: send a Take where the `maker` account does not mat
 
 - [ ] `src/instructions/take.rs` implemented and wired into `mod.rs` and `lib.rs`.
 - [ ] `src/instructions/cancel.rs` implemented and wired.
-- [ ] `cargo build-sbf` succeeds with no new `unsafe`. The only one in the codebase is the pointer cast in `Escrow::from_account_info`; you should not need another.
+- [ ] `cargo build-sbf` succeeds with no new `unsafe`. The only one in the codebase is the pointer cast in `Escrow::load_mut`; you should not need another.
 - [ ] `cargo test` runs Make → Take, Make → Cancel, and at least the two negative tests above, all green.
 - [ ] Every test prints `compute_units_consumed`, like the Make test does, and you have compared Take and Cancel against Make's ~30k. There is no fixed budget to hit, but a number far above Make's is worth a look at how many CPIs you are making.
 
@@ -744,7 +748,7 @@ Your test setup lost the Rent sysvar override. Pinocchio 0.11 computes rent the 
 <details>
 <summary><code>Account borrow failed</code> / <code>AccountBorrowFailed</code></summary>
 
-A `Ref` on the account's data (from `Account::from_account_view` or `Escrow::from_account_info`) is still alive when you CPI or call `close()`. Wrap the read in `{ }`, copy primitives out, and let the borrow drop before you invoke anything.
+A `Ref`/`RefMut` on the account's data (from `Account::from_account_view` or `Escrow::load_mut`) is still alive when you CPI or call `close()`. Wrap the read in `{ }`, copy primitives out, and let the borrow drop before you invoke anything.
 
 </details>
 
@@ -772,7 +776,7 @@ You copied from an older tutorial. In `pinocchio-token` 0.6 the type is `pinocch
 <details>
 <summary><code>Cross-program invocation with unauthorized signer</code></summary>
 
-Your `Seed`s do not reproduce the PDA. Check three things: the bump is the one stored in state, the address is the *maker's* (not the taker's), and the literal is exactly `b"escrow"`.
+Your `Seed`s do not reproduce the PDA. Check three things: the bump is the one stored in state (Make wrote the canonical one there), the address is the *maker's* (not the taker's), and the literal is exactly `b"escrow"`.
 
 </details>
 
@@ -812,9 +816,23 @@ An SPL program crate in `[dev-dependencies]` is missing `features = ["no-entrypo
 </details>
 
 <details>
+<summary>Should my Take test send the bump?</summary>
+
+No. Make derives and stores the canonical bump; Take and Cancel read it back with `escrow.bump`. Instruction data for both is the single discriminator byte. Your test still needs `find_program_address` to know the escrow *address* for the `AccountMeta`, but the returned bump is not sent anywhere.
+
+</details>
+
+<details>
+<summary>Why does <code>Escrow::load_mut</code> return a <code>RefMut</code> instead of <code>&amp;mut Escrow</code>?</summary>
+
+Because the `RefMut` is what keeps the account's borrow flag set. `RefMut::map` re-types the guard from `[u8]` to `Escrow` without releasing it. If the accessor dropped the guard and handed back a bare `&mut Escrow`, the runtime would think the account is free while you still hold a pointer into it. Use it through `DerefMut` exactly like a `&mut Escrow` (`let mut e = Escrow::load_mut(acc)?; e.set_maker(..)`), copy primitives out, and let it drop before any CPI.
+
+</details>
+
+<details>
 <summary>Do I need an <code>unsafe</code> block to check the owner?</summary>
 
-No. In 0.11 `AccountView::owner()` is a safe fn, and `owned_by(&crate::ID)` is the shortest way to write the check. The only `unsafe` in this codebase is the pointer cast inside `Escrow::from_account_info`.
+No. In 0.11 `AccountView::owner()` is a safe fn, and `owned_by(&crate::ID)` is the shortest way to write the check. The only `unsafe` in this codebase is the pointer cast inside `Escrow::load_mut`.
 
 </details>
 
@@ -837,7 +855,9 @@ Quick reference for the APIs used in this repo: `pinocchio = 0.11.2`, `pinocchio
 | Check who owns an account                 | `account.owned_by(&crate::ID)` or `account.owner() == &crate::ID`                |
 | Check an account signed                   | `account.is_signer()`                                                            |
 | Read SPL token account fields             | `pinocchio_token::state::Account::from_account_view(acc)?` → `.owner()`, `.mint()`, `.amount()` |
+| Find the canonical bump (init only)       | `Address::find_program_address(&[seed1, seed2], &crate::ID)` → `(Address, u8)`   |
 | Derive a PDA (bump known)                 | `pinocchio_pubkey::derive_address(&[seed1, seed2, &[bump]], None, &crate::ID.to_bytes())` |
+| Load escrow state                         | `Escrow::load_mut(acc)?` → `RefMut<Escrow>`; drop it before any CPI               |
 | Sign a CPI as a PDA                       | `let s = [Seed::from(..), ..]; let signer = Signer::from(&s); ix.invoke_signed(&[signer])` |
 | Create an account                         | `pinocchio_system::instructions::CreateAccount { from, to, lamports, space, owner }` |
 | Create an ATA                             | `pinocchio_associated_token_account::instructions::Create { .. }` / `CreateIdempotent { .. }` |

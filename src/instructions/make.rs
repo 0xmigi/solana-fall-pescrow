@@ -1,13 +1,12 @@
 use pinocchio::{
-    AccountView, ProgramResult, cpi::{Seed, Signer}, error::ProgramError, sysvars::{Sysvar, rent::Rent}
+    AccountView, Address, ProgramResult, cpi::{Seed, Signer}, error::ProgramError, sysvars::{Sysvar, rent::Rent}
 };
-use pinocchio_pubkey::derive_address;
 use pinocchio_system::instructions::CreateAccount;
 
 use crate::state::Escrow;
 
-/// 1 (bump) + 8 (amount_to_receive) + 8 (amount_to_give)
-const MAKE_DATA_LEN: usize = 17;
+/// 8 (amount_to_receive) + 8 (amount_to_give)
+const MAKE_DATA_LEN: usize = 16;
 
 pub fn process_make_instruction(
     accounts: &mut [AccountView],
@@ -40,23 +39,26 @@ pub fn process_make_instruction(
     }
 
     // Instruction data layout (after the discriminator byte):
-    //   [0]      bump: u8
-    //   [1..9]   amount_to_receive: u64 (little-endian)
-    //   [9..17]  amount_to_give: u64 (little-endian)
+    //   [0..8]   amount_to_receive: u64 (little-endian)
+    //   [8..16]  amount_to_give: u64 (little-endian)
     if data.len() < MAKE_DATA_LEN {
         return Err(ProgramError::InvalidInstructionData);
     }
-    let bump = data[0];
-    let amount_to_receive = u64::from_le_bytes(data[1..9].try_into().unwrap());
-    let amount_to_give = u64::from_le_bytes(data[9..17].try_into().unwrap());
+    let amount_to_receive = u64::from_le_bytes(data[0..8].try_into().unwrap());
+    let amount_to_give = u64::from_le_bytes(data[8..16].try_into().unwrap());
 
     if !maker.is_signer() {
         return Err(ProgramError::MissingRequiredSignature);
     }
 
-    let seed = [b"escrow".as_ref(), maker.address().as_ref(), &[bump]];
-    let escrow_account_pda = derive_address(&seed, None, &crate::ID.to_bytes());
-    if escrow_account_pda != *escrow_account.address().as_array() {
+    // Derive the canonical bump on-chain. Never trust a bump supplied by the client:
+    // with seeds ["escrow", maker] a non-canonical bump would let one maker open several
+    // "the" escrows, and any client using find_program_address would only see one of them.
+    // This costs a few thousand CU once, at init. Take and Cancel will use the stored bump
+    // with derive_address (a single hash) instead.
+    let (escrow_account_pda, bump) =
+        Address::find_program_address(&[b"escrow", maker.address().as_ref()], &crate::ID);
+    if escrow_account_pda != *escrow_account.address() {
         return Err(ProgramError::InvalidSeeds);
     }
 
@@ -79,7 +81,7 @@ pub fn process_make_instruction(
 
     // Scoped so the mutable borrow on the escrow data is released before the CPIs below.
     {
-        let escrow_state = Escrow::from_account_info(escrow_account)?;
+        let mut escrow_state = Escrow::load_mut(escrow_account)?;
         escrow_state.set_maker(maker.address());
         escrow_state.set_mint_a(mint_a.address());
         escrow_state.set_mint_b(mint_b.address());
