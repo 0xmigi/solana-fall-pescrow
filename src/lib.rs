@@ -1,7 +1,7 @@
 #![allow(unexpected_cfgs)]
 use pinocchio::{AccountView, entrypoint, Address, ProgramResult, address::declare_id, error::ProgramError};
 
-use crate::instructions::EscrowInstrctions;
+use crate::instructions::EscrowInstructions;
 
 mod tests;
 mod state;
@@ -17,14 +17,16 @@ pub fn process_instruction(
     instruction_data: &[u8],
 ) -> ProgramResult {
 
-    assert_eq!(program_id, &ID);
+    if program_id != &ID {
+        return Err(ProgramError::IncorrectProgramId);
+    }
 
     let (discriminator, data) = instruction_data.split_first()
         .ok_or(ProgramError::InvalidInstructionData)?;
 
-    match EscrowInstrctions::try_from(discriminator)? {
-        EscrowInstrctions::Make => instructions::process_make_instruction(accounts, data)?,
-        // EscrowInstrctions::MakeV2 => instructions::process_make_instruction_v2(accounts, data)?,
+    match EscrowInstructions::try_from(discriminator)? {
+        EscrowInstructions::Make => instructions::process_make_instruction(accounts, data)?,
+        // TODO (challenge): EscrowInstructions::Take and EscrowInstructions::Cancel
         _ => return Err(ProgramError::InvalidInstructionData),
     }
     Ok(())

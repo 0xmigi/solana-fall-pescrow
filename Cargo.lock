@@ -1079,6 +1079,7 @@ dependencies = [
  "solana-keypair",
  "solana-message",
  "solana-native-token",
+ "solana-program-pack",
  "solana-pubkey 4.1.0",
  "solana-rpc-client",
  "solana-sdk-ids",

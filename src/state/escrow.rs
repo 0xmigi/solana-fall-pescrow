@@ -11,8 +11,12 @@ pub struct Escrow {
     pub bump: u8,
 }
 
+// The getters are not used by `Make` yet; `Take` and `Cancel` will need them.
+#[allow(dead_code)]
 impl Escrow {
-    pub const LEN: usize = 32 + 32 + 32 + 8 + 8;
+    /// Total size of the account data: maker + mint_a + mint_b + amount_to_receive + amount_to_give + bump.
+    /// Derived from the struct itself so it can never drift out of sync with the fields (113 bytes).
+    pub const LEN: usize = core::mem::size_of::<Self>();
 
     pub fn from_account_info(account_info: &AccountView) -> Result<&mut Self, ProgramError> {
         let mut data = account_info.try_borrow_mut()?;

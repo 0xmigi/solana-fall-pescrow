@@ -13,6 +13,7 @@ mod tests {
     use solana_pubkey::Pubkey;
     use solana_signer::Signer;
     use solana_transaction::Transaction;
+    use solana_program_pack::Pack;
 
     const PROGRAM_ID: &str = "4ibrEMW5F6hKnkW4jVedswYv6H6VtwPN6ar6dvXDN1nT";
     const TOKEN_PROGRAM_ID: Pubkey = spl_token::ID;
@@ -134,7 +135,34 @@ mod tests {
         let tx = svm.send_transaction(transaction).unwrap();
 
         // Log transaction details
-        println!("\n\nMake transaction sucessfull");
+        println!("\n\nMake transaction successful");
         println!("CUs Consumed: {}", tx.compute_units_consumed);
+
+        // --- extra verification ---
+        let vault_acc = svm.get_account(&vault).unwrap();
+        let vault_state = spl_token_2022::state::Account::unpack(&vault_acc.data).unwrap();
+        println!("Vault owner: {} (escrow PDA? {})", vault_state.owner, vault_state.owner == escrow.0);
+        println!("Vault balance: {}", vault_state.amount);
+        assert_eq!(vault_state.amount, amount_to_give);
+
+        let maker_acc = svm.get_account(&maker_ata_a).unwrap();
+        let maker_state = spl_token_2022::state::Account::unpack(&maker_acc.data).unwrap();
+        println!("Maker ATA balance: {}", maker_state.amount);
+        assert_eq!(maker_state.amount, 1000000000 - amount_to_give);
+
+        let esc = svm.get_account(&escrow.0).unwrap();
+        println!("Escrow account owner: {} (program? {})", esc.owner, esc.owner == program_id);
+        println!("Escrow data len: {}", esc.data.len());
+        let d = &esc.data;
+        println!("  maker   = {}", Pubkey::new_from_array(d[0..32].try_into().unwrap()));
+        println!("  mint_a  = {}", Pubkey::new_from_array(d[32..64].try_into().unwrap()));
+        println!("  mint_b  = {}", Pubkey::new_from_array(d[64..96].try_into().unwrap()));
+        println!("  receive = {}", u64::from_le_bytes(d[96..104].try_into().unwrap()));
+        println!("  give    = {}", u64::from_le_bytes(d[104..112].try_into().unwrap()));
+        println!("  bump    = {}", d[112]);
+        assert_eq!(&d[0..32], payer.pubkey().as_ref());
+        assert_eq!(u64::from_le_bytes(d[96..104].try_into().unwrap()), amount_to_receive);
+        assert_eq!(u64::from_le_bytes(d[104..112].try_into().unwrap()), amount_to_give);
+        assert_eq!(d[112], bump);
     }
 }

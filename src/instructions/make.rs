@@ -6,6 +6,9 @@ use pinocchio_system::instructions::CreateAccount;
 
 use crate::state::Escrow;
 
+/// 1 (bump) + 8 (amount_to_receive) + 8 (amount_to_give)
+const MAKE_DATA_LEN: usize = 17;
+
 pub fn process_make_instruction(
     accounts: &[AccountView],
     data: &[u8],
@@ -36,17 +39,29 @@ pub fn process_make_instruction(
         }
     }
 
+    // Instruction data layout (after the discriminator byte):
+    //   [0]      bump: u8
+    //   [1..9]   amount_to_receive: u64 (little-endian)
+    //   [9..17]  amount_to_give: u64 (little-endian)
+    if data.len() < MAKE_DATA_LEN {
+        return Err(ProgramError::InvalidInstructionData);
+    }
     let bump = data[0];
+    let amount_to_receive = u64::from_le_bytes(data[1..9].try_into().unwrap());
+    let amount_to_give = u64::from_le_bytes(data[9..17].try_into().unwrap());
+
+    if !maker.is_signer() {
+        return Err(ProgramError::MissingRequiredSignature);
+    }
+
     let seed = [b"escrow".as_ref(), maker.address().as_ref(), &[bump]];
-
     let escrow_account_pda = derive_address(&seed, None, &crate::ID.to_bytes());
-    assert_eq!(escrow_account_pda, *escrow_account.address().as_array());
+    if escrow_account_pda != *escrow_account.address().as_array() {
+        return Err(ProgramError::InvalidSeeds);
+    }
 
-    let amount_to_receive = unsafe{ *(data.as_ptr().add(1) as *const u64) };
-    let amount_to_give = unsafe{ *(data.as_ptr().add(9) as *const u64) };
-
-    let bump = [bump.to_le()];
-    let seed = [Seed::from(b"escrow"), Seed::from(maker.address().as_array()), Seed::from(&bump)];
+    let bump_bytes = [bump];
+    let seed = [Seed::from(b"escrow"), Seed::from(maker.address().as_array()), Seed::from(&bump_bytes)];
     let seeds = Signer::from(&seed);
 
     unsafe {
@@ -68,7 +83,7 @@ pub fn process_make_instruction(
                 escrow_state.set_mint_b(mint_b.address());
                 escrow_state.set_amount_to_receive(amount_to_receive);
                 escrow_state.set_amount_to_give(amount_to_give);  
-                escrow_state.bump = data[0];
+                escrow_state.bump = bump;
             }
         }
         else {
