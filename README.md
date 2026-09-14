@@ -1,6 +1,6 @@
 # Pescrow: A Pinocchio Escrow Challenge
 
-> **Solana Summer** · Native Rust on Solana with [Pinocchio](https://github.com/anza-xyz/pinocchio)
+> **Solana Fall School** · Native Rust on Solana with [Pinocchio](https://github.com/anza-xyz/pinocchio)
 
 This repository is a *deliberately unfinished* escrow program. It ships with the **Make** instruction fully working and tested, and leaves **Take** and **Cancel** for you to build.
 
